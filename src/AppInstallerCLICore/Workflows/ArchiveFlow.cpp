@@ -2,9 +2,11 @@
 // Licensed under the MIT License.
 #include "pch.h"
 #include "ArchiveFlow.h"
-#include "winget/Archive.h"
-#include "winget/Filesystem.h"
 #include "PortableFlow.h"
+#include "ShellExecuteInstallerHandler.h"
+#include <winget/AdminSettings.h>
+#include <winget/Archive.h>
+#include <winget/Filesystem.h>
 
 using namespace AppInstaller::Manifest;
 
@@ -27,9 +29,10 @@ namespace AppInstaller::CLI::Workflow
             }
             else
             {
-                if (context.Args.Contains(Execution::Args::Type::Force))
+                if (context.Args.Contains(Execution::Args::Type::IgnoreLocalArchiveMalwareScan) &&
+                    Settings::IsAdminSettingEnabled(Settings::BoolAdminSetting::LocalArchiveMalwareScanOverride))
                 {
-                    AICLI_LOG(CLI, Warning, << "Archive malware scan failed; proceeding due to --force override");
+                    AICLI_LOG(CLI, Warning, << "Archive scan detected malware. Proceeding due to --ignore-local-archive-malware-scan");
                     context.Reporter.Warn() << Resource::String::ArchiveFailedMalwareScanOverridden << std::endl;
                 }
                 else
@@ -50,18 +53,26 @@ namespace AppInstaller::CLI::Workflow
 
         AICLI_LOG(CLI, Info, << "Extracting archive to: " << destinationFolder);
         context.Reporter.Info() << Resource::String::ExtractingArchive << std::endl;
-        HRESULT result = AppInstaller::Archive::TryExtractArchive(installerPath, destinationFolder);
 
-        if (SUCCEEDED(result))
+        if (Settings::User().Get<Settings::Setting::ArchiveExtractionMethod>() == Archive::ExtractionMethod::Tar)
         {
-            AICLI_LOG(CLI, Info, << "Successfully extracted archive");
-            context.Reporter.Info() << Resource::String::ExtractArchiveSucceeded << std::endl;
+            context << ShellExecuteExtractArchive(installerPath, destinationFolder);
         }
         else
         {
-            AICLI_LOG(CLI, Info, << "Failed to extract archive with code " << result);
-            context.Reporter.Error() << Resource::String::ExtractArchiveFailed << std::endl;
-            AICLI_TERMINATE_CONTEXT(APPINSTALLER_CLI_ERROR_EXTRACT_ARCHIVE_FAILED);
+            HRESULT result = AppInstaller::Archive::TryExtractArchive(installerPath, destinationFolder);
+
+            if (SUCCEEDED(result))
+            {
+                AICLI_LOG(CLI, Info, << "Successfully extracted archive");
+                context.Reporter.Info() << Resource::String::ExtractArchiveSucceeded << std::endl;
+            }
+            else
+            {
+                AICLI_LOG(CLI, Info, << "Failed to extract archive with code " << result);
+                context.Reporter.Error() << Resource::String::ExtractArchiveFailed << std::endl;
+                AICLI_TERMINATE_CONTEXT(APPINSTALLER_CLI_ERROR_EXTRACT_ARCHIVE_FAILED);
+            }
         }
     }
 
@@ -90,7 +101,9 @@ namespace AppInstaller::CLI::Workflow
             else if (!std::filesystem::exists(nestedInstallerPath))
             {
                 AICLI_LOG(CLI, Error, << "Unable to locate nested installer at: " << nestedInstallerPath);
-                context.Reporter.Error() << Resource::String::NestedInstallerNotFound << ' ' << nestedInstallerPath << std::endl;
+                context.Reporter.Error()
+                    << Resource::String::NestedInstallerNotFound(Utility::LocIndView{ nestedInstallerPath.u8string() })
+                    << std::endl;
                 AICLI_TERMINATE_CONTEXT(APPINSTALLER_CLI_ERROR_NESTEDINSTALLER_NOT_FOUND);
             }
             else if (!IsPortableType(installer.NestedInstallerType))

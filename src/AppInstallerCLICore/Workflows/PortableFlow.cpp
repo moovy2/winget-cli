@@ -4,9 +4,9 @@
 #include "PortableFlow.h"
 #include "PortableInstaller.h"
 #include "WorkflowBase.h"
-#include "winget/Filesystem.h"
-#include "winget/PortableFileEntry.h"
-#include <Microsoft/PortableIndex.h>
+#include <winget/Filesystem.h>
+#include <winget/PortableFileEntry.h>
+#include <winget/PortableIndex.h>
 
 using namespace AppInstaller::Manifest;
 using namespace AppInstaller::Repository;
@@ -68,16 +68,6 @@ namespace AppInstaller::CLI::Workflow
                 AICLI_TERMINATE_CONTEXT(APPINSTALLER_CLI_ERROR_PORTABLE_REPARSE_POINT_NOT_SUPPORTED);
             }
         }
-
-        void EnsureRunningAsAdminForMachineScopeInstall(Execution::Context& context)
-        {
-            // Admin is required for machine scope install or else creating a symlink in the %PROGRAMFILES% link location will fail.
-            Manifest::ScopeEnum scope = ConvertToScopeEnum(context.Args.GetArg(Execution::Args::Type::InstallScope));
-            if (scope == Manifest::ScopeEnum::Machine)
-            {
-                context << Workflow::EnsureRunningAsAdmin;
-            }
-        }
     }
 
     void VerifyPackageAndSourceMatch(Execution::Context& context)
@@ -132,14 +122,30 @@ namespace AppInstaller::CLI::Workflow
         }
         else
         {
-            scope = Manifest::ConvertToScopeEnum(context.Args.GetArg(Execution::Args::Type::InstallScope));
+            if (context.Args.Contains(Execution::Args::Type::InstallScope))
+            {
+                scope = Manifest::ConvertToScopeEnum(context.Args.GetArg(Execution::Args::Type::InstallScope));
+            }
+            else
+            {
+                Manifest::ScopeEnum requiredScope = Settings::User().Get<Settings::Setting::InstallScopeRequirement>();
+                Manifest::ScopeEnum preferredScope = Settings::User().Get<Settings::Setting::InstallScopePreference>();
+
+                scope = requiredScope != Manifest::ScopeEnum::Unknown ? requiredScope : preferredScope;
+            }
         }
 
-        Utility::Architecture arch = context.Get<Execution::Data::Installer>()->Arch;
+        const auto& installer = context.Get<Execution::Data::Installer>().value();
+        Utility::Architecture arch = installer.Arch;
         const std::string& productCode = GetPortableProductCode(context);
 
         PortableInstaller portableInstaller = PortableInstaller(scope, arch, productCode);
         portableInstaller.IsUpdate = isUpdate;
+
+        if (IsArchiveType(installer.BaseInstallerType) && installer.ArchiveBinariesDependOnPath)
+        {
+            portableInstaller.BinariesDependOnPath = true;
+        }
 
         // Set target install directory
         std::string_view locationArg = context.Args.GetArg(Execution::Args::Type::InstallLocation);
@@ -172,6 +178,8 @@ namespace AppInstaller::CLI::Workflow
         // InstallerPath will point to a directory if it is extracted from an archive.
         if (std::filesystem::is_directory(installerPath))
         {
+            portableInstaller.RecordToIndex = true;
+
             for (const auto& entry : std::filesystem::directory_iterator(installerPath))
             {
                 std::filesystem::path entryPath = entry.path();
@@ -189,17 +197,12 @@ namespace AppInstaller::CLI::Workflow
                 }
             }
 
-            if (entries.size() > 1)
-            {
-                portableInstaller.RecordToIndex = true;
-            }
-
             const std::vector<Manifest::NestedInstallerFile>& nestedInstallerFiles = context.Get<Execution::Data::Installer>()->NestedInstallerFiles;
 
             for (const auto& nestedInstallerFile : nestedInstallerFiles)
             {
                 const std::filesystem::path& targetPath = targetInstallDirectory / ConvertToUTF16(nestedInstallerFile.RelativeFilePath);
-                
+
                 std::filesystem::path commandAlias;
                 if (nestedInstallerFile.PortableCommandAlias.empty())
                 {
@@ -218,31 +221,20 @@ namespace AppInstaller::CLI::Workflow
         {
             std::string_view renameArg = context.Args.GetArg(Execution::Args::Type::Rename);
             const std::vector<string_t>& commands = context.Get<Execution::Data::Installer>()->Commands;
-            std::filesystem::path fileName;
-            std::filesystem::path commandAlias;
-            
+            std::filesystem::path commandAlias = installerPath.filename();
+
+            if (!commands.empty())
+            {
+                commandAlias = ConvertToUTF16(commands[0]);
+            }
+
             if (!renameArg.empty())
             {
-                fileName = commandAlias = ConvertToUTF16(renameArg);
+                commandAlias = ConvertToUTF16(renameArg);
             }
-            else
-            {
-                if (!commands.empty())
-                {
-                    commandAlias = ConvertToUTF16(commands[0]);
-                }
-                else
-                {
-                    commandAlias = installerPath.filename();
-                }
-
-                fileName = installerPath.filename();
-            }
-
-            AppInstaller::Filesystem::AppendExtension(fileName, ".exe");
             AppInstaller::Filesystem::AppendExtension(commandAlias, ".exe");
 
-            const std::filesystem::path& targetFullPath = targetInstallDirectory / fileName;
+            const std::filesystem::path& targetFullPath = targetInstallDirectory / commandAlias;
             entries.emplace_back(std::move(PortableFileEntry::CreateFileEntry(installerPath, targetFullPath, {})));
             entries.emplace_back(std::move(PortableFileEntry::CreateSymlinkEntry(symlinkDirectory / commandAlias, targetFullPath)));
         }
@@ -253,7 +245,6 @@ namespace AppInstaller::CLI::Workflow
     void PortableInstallImpl(Execution::Context& context)
     {
         PortableInstaller& portableInstaller = context.Get<Execution::Data::PortableInstaller>();
-
         try
         {
             context.Reporter.Info() << Resource::String::InstallFlowStartingPackageInstall << std::endl;
@@ -334,23 +325,8 @@ namespace AppInstaller::CLI::Workflow
         if (installerType == InstallerTypeEnum::Portable)
         {
             context <<
-                EnsureRunningAsAdminForMachineScopeInstall <<
                 EnsureValidArgsForPortableInstall <<
                 EnsureVolumeSupportsReparsePoints;
-        }
-    }
-
-    void EnsureSupportForPortableUninstall(Execution::Context& context)
-    {
-        auto installedPackageVersion = context.Get<Execution::Data::InstalledPackageVersion>();
-        const std::string installedTypeString = installedPackageVersion->GetMetadata()[PackageVersionMetadata::InstalledType];
-        if (ConvertToInstallerTypeEnum(installedTypeString) == InstallerTypeEnum::Portable)
-        {
-            const std::string installedScope = installedPackageVersion->GetMetadata()[Repository::PackageVersionMetadata::InstalledScope];
-            if (ConvertToScopeEnum(installedScope) == Manifest::ScopeEnum::Machine)
-            {
-                context << EnsureRunningAsAdmin;
-            }
         }
     }
 }

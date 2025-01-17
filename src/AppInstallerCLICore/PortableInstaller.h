@@ -32,6 +32,7 @@ namespace AppInstaller::CLI::Portable
         std::string WinGetPackageIdentifier;
         std::string WinGetSourceIdentifier;
         bool InstallDirectoryCreated = false;
+        bool BinariesDependOnPath = false;
         // If we fail to create a symlink, add install directory to PATH variable
         bool InstallDirectoryAddedToPath = false;
 
@@ -65,11 +66,6 @@ namespace AppInstaller::CLI::Portable
         void CommitToARPEntry(PortableValueName valueName, T value)
         {
             m_portableARPEntry.SetValue(valueName, value);
-        }
-
-        std::filesystem::path GetInstallDirectoryForPathVariable()
-        {
-            return  InstallDirectoryAddedToPath ? InstallLocation : GetPortableLinksLocation(GetScope());
         }
 
         std::filesystem::path GetPortableIndexFileName()
@@ -114,7 +110,7 @@ namespace AppInstaller::CLI::Portable
         void CreateTargetInstallDirectory();
         void RemoveInstallDirectory();
 
-        void AddToPathVariable();
-        void RemoveFromPathVariable();
+        void AddToPathVariable(const std::filesystem::path& value);
+        void RemoveFromPathVariable(const std::filesystem::path& value);
     };
 }

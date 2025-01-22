@@ -47,6 +47,7 @@ namespace winrt::Microsoft::Management::Deployment::implementation
     }
     winrt::Windows::Foundation::IAsyncOperation<winrt::Microsoft::Management::Deployment::FindPackagesResult> PackageCatalog::FindPackagesAsync(winrt::Microsoft::Management::Deployment::FindPackagesOptions options)
     {
+        co_await resume_background();
         co_return FindPackages(options);
     }
 
@@ -115,7 +116,7 @@ namespace winrt::Microsoft::Management::Deployment::implementation
             winrt::Microsoft::Management::Deployment::implementation::FindPackagesResult>>();
         // TODO: Add search timeout and error code.
         winrt::Microsoft::Management::Deployment::FindPackagesResultStatus status = FindPackagesResultStatus(hr);
-        findPackagesResult->Initialize(status, isTruncated, matches);
+        findPackagesResult->Initialize(status, isTruncated, matches, hr);
         return *findPackagesResult;
     }
 
